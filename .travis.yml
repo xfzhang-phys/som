@@ -1,7 +1,6 @@
 language: cpp
 os: linux
-dist: trusty
-group: deprecated-2017Q4
+dist: xenial
 cache: bundler
 
 compiler:
@@ -17,17 +16,16 @@ addons:
   apt:
     update: true
     sources:
-    - sourceline: 'ppa:ubuntu-toolchain-r/test'                                     # GCC 5
-    - sourceline: 'deb http://apt.llvm.org/trusty/ llvm-toolchain-trusty-4.0 main'  # Clang/libclang 4.0
+    - sourceline: 'ppa:ubuntu-toolchain-r/test' # GCC 7
+    - sourceline: 'deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-7 main'  # Clang/libclang 7.0
       key_url: 'https://apt.llvm.org/llvm-snapshot.gpg.key'
-    - sourceline: 'ppa:kzemek/boost'                                                # Boost 1.58
     packages:
-    - gcc-5
-    - g++-5
-    - clang-4.0
+    - gcc-7
+    - g++-7
+    - clang-7
+    - libomp-7-dev
     - libboost1.58-dev
-    - libgfortran3
-    - gfortran
+    - liblapack-dev
     - openmpi-bin
     - openmpi-common
     - openmpi-doc
@@ -46,13 +44,17 @@ addons:
     - python-mpi4py
     - python-mako
     - python-sphinx
-    - libclang-4.0-dev
-    - python-clang-4.0
+    - libclang-7-dev
+    - python-clang-7
     - libjs-mathjax
 
 before_install:
-  - sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-5 60 --slave /usr/bin/g++ g++ /usr/bin/g++-5
-  - sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-4.0 60 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-4.0
+  - |
+    sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-7 60 \
+                             --slave /usr/bin/g++ g++ /usr/bin/g++-7
+  - |
+    sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-7 60\
+                             --slave /usr/bin/clang++ clang++ /usr/bin/clang++-7
 
 install: true
 
@@ -63,48 +65,67 @@ before_script:
   # Build and install TRIQS
   - cd $TRAVIS_BUILD_DIR/..
   - git clone https://github.com/TRIQS/triqs.git triqs
-  - pushd triqs && git checkout 1.4.2 && popd
-  # Delete problematic lines from TRIQS docs that make older versions of Clang segfault
-  - sed -i -e '15,32d' triqs/doc/reference/gfs/c++/gf_block_0.cpp
+  - pushd triqs && git checkout 2.2.x && popd
   - mkdir installed
   - mkdir triqs.build && pushd triqs.build
   - |
-    cmake ../triqs                                                          \
-    -DCMAKE_BUILD_TYPE=Debug                                                \
-    -DCMAKE_INSTALL_PREFIX=$TRAVIS_BUILD_DIR/../installed                   \
-    -DCMAKE_C_COMPILER=/usr/bin/${CC}                                       \
-    -DCMAKE_CXX_COMPILER=/usr/bin/${CXX}                                    \
-    -DPYTHON_INTERPRETER=/usr/bin/python                                    \
-    -DTRIQS_LIBCLANG_LOCATION=/usr/lib/x86_64-linux-gnu/libclang-4.0.so.1   \
-    -DPython_use_mpi4py=ON                                                  \
-    -DSphinx_Math_Generator_MathJax=ON                                      \
-    -DMATHJAX_PATH=/usr/share/javascript/mathjax                            \
-    -DBuild_Documentation=ON
+    CMAKE_OPTS="                                                               \
+      -DCMAKE_INSTALL_PREFIX=$TRAVIS_BUILD_DIR/../installed                    \
+      -DCMAKE_BUILD_TYPE=Debug                                                 \
+      -DCMAKE_C_COMPILER=/usr/bin/${CC}                                        \
+      -DCMAKE_CXX_COMPILER=/usr/bin/${CXX}                                     \
+      -DPYTHON_INTERPRETER=/usr/bin/python                                     \
+    "
+  # Build documentation only when compiling with clang
+  - |
+    if [[ $CC == "clang" ]]; then
+      CMAKE_OPTS="${CMAKE_OPTS}                                                \
+        -DLIBCLANG_LOCATION=/usr/lib/x86_64-linux-gnu/libclang-7.so.1          \
+        -DMATHJAX_PATH=/usr/share/javascript/mathjax                           \
+        -DBuild_Documentation=ON                                               \
+      "
+    else
+      CMAKE_OPTS="${CMAKE_OPTS} -DBuild_Documentation=OFF"
+    fi
+  - cmake ../triqs ${CMAKE_OPTS}
   - make -j3
-  - make test
   - make install
   - popd
 
 script:
   # Build SOM
+  - source $TRAVIS_BUILD_DIR/../installed/share/triqsvars.sh
   - mkdir som.build && pushd som.build
   - |
-    cmake ../som                                                            \
-    -DCMAKE_BUILD_TYPE=Debug                                                \
-    -DCMAKE_CXX_COMPILER=/usr/bin/${CXX}                                    \
-    -DTRIQS_PATH=$TRAVIS_BUILD_DIR/../installed                             \
-    -DTRIQS_INVENTORY_DIR="https://triqs.github.io/triqs/1.4/"              \
-    -DBUILD_DOC=ON
+    CMAKE_OPTS="                                                               \
+      -DCMAKE_BUILD_TYPE=Debug                                                 \
+      -DCMAKE_C_COMPILER=/usr/bin/${CC}                                        \
+      -DCMAKE_CXX_COMPILER=/usr/bin/${CXX}                                     \
+    "
+  # Build documentation only when compiling with clang
+  - |
+    if [[ $CC == "clang" ]]; then
+      CMAKE_OPTS="${CMAKE_OPTS}                                                \
+        -DTRIQS_INVENTORY_DIR=https://triqs.github.io/triqs/2.2.x/             \
+        -DBuild_Documentation=ON                                               \
+      "
+    else
+      CMAKE_OPTS="${CMAKE_OPTS} -DBuild_Documentation=OFF"
+    fi
+  - cmake ../som ${CMAKE_OPTS}
   - make -j3
   - make test
   - make install
   # Prepare docs for deployment
-  - cd $TRAVIS_BUILD_DIR/../som.build
   - |
-    find doc/html -name "*.html"                                            \
-    -type f -exec sed -i 's/\/usr\/share\/javascript\/mathjax/\/som\/mathjax/g' {} \;
-  - cp -r /usr/share/javascript/mathjax doc/html/mathjax
-  - touch doc/html/.nojekyll
+    if [[ $CC == "clang" ]]; then
+      cd $TRAVIS_BUILD_DIR/../som.build
+      find doc/html -name "*.html"                                             \
+       -type f                                                                 \
+       -exec sed -i 's/\/usr\/share\/javascript\/mathjax/\/som\/mathjax/g' {} \;
+      cp -r /usr/share/javascript/mathjax doc/html/mathjax
+      touch doc/html/.nojekyll
+    fi
 
 deploy:
   # Publish documentation
